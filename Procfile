@@ -1,0 +1,1 @@
+worker: python currency_strength_meter_v10_yfinance.py
