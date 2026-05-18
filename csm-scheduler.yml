@@ -1,0 +1,36 @@
+name: CSM Bot Scheduler
+
+on:
+  schedule:
+    # All times in UTC (PHT = UTC+8, so subtract 8 hours)
+    - cron: '0 22 * * *'   # 06:00 PHT
+    - cron: '0 2 * * *'    # 10:00 PHT
+    - cron: '0 6 * * *'    # 14:00 PHT
+    - cron: '0 10 * * *'   # 18:00 PHT
+    - cron: '0 14 * * *'   # 22:00 PHT
+
+  # Allow manual trigger from GitHub website anytime
+  workflow_dispatch:
+
+jobs:
+  run-csm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run CSM Bot (single broadcast)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID_2: ${{ secrets.TELEGRAM_CHAT_ID_2 }}
+        run: python currency_strength_meter_v10_yfinance.py --once
