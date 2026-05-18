@@ -55,7 +55,7 @@ def init_logging():
 # CONFIGURATION
 # ──────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8781053968:AAE2f3-DtO7Cl6r41lGkZ97QqKPlu6y2GjE")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "6579085899") #@Ardhie110388
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "-1003786027315") #MCROTRADES
 TELEGRAM_CHAT_ID_2 = os.getenv("TELEGRAM_CHAT_ID_2", "")
 
 TELEGRAM_CHANNELS  = [cid for cid in [TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2] if cid]
