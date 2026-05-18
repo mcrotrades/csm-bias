@@ -29,6 +29,6 @@ jobs:
       - name: Run CSM Bot (single broadcast)
         env:
           TELEGRAM_BOT_TOKEN: "8781053968:AAE2f3-DtO7Cl6r41lGkZ97QqKPlu6y2GjE"
-          TELEGRAM_CHAT_ID: "6579085899"
+          TELEGRAM_CHAT_ID: "6579085899"  #@Ardhie110388
           TELEGRAM_CHAT_ID_2: ""
         run: python currency_strength_meter_v10_yfinance.py --once
