@@ -1,10 +1,17 @@
 """
-Currency Strength Meter — yFinance Edition v10
+Currency Strength Meter — yFinance Edition v11
 ===============================================
-Message 1: CSM Scoreboard (current)
-Message 2: Historical Scoreboard — identical layout to Message 1
-           Shows 4 snapshots (3 past hours + now) each with full
-           H1 / H4 / D1 scores recalculated from historical bars.
+PAIR-LEVEL SCORECARD (replaces v10's currency scoreboard)
+
+For each of the 28 pairs:
+  - Strength: 0-10 gauge derived from (base_currency.norm - quote_currency.norm)
+  - Signal: BUY / SELL / NEUTRAL
+  - Score History: last 8 hourly strength readings
+  - Transition: Aligned (consistent direction across history) / Neutral (flip-flopping)
+
+Underlying currency scoring math (28 pairs, 8 currencies, H1/H4/D1,
+EMA20 bull/bear, weighted H1x1+H4x2+D1x3, normalized -10..+10) is
+UNCHANGED from v10. Only the presentation layer changed.
 """
 
 import os
@@ -27,12 +34,7 @@ TELEGRAM_CHAT_ID_2 = os.getenv("TELEGRAM_CHAT_ID_2", "-1003946103311") #Circle o
 TELEGRAM_CHANNELS  = [cid for cid in [TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2] if cid]
 
 EMA_LEN  = 20
-ATR_LEN  = 14
-BB_LEN   = 20
-BB_MULT  = 2.0
-ATR_AVG  = 20
-ATR_LOW  = 0.80
-ATR_HIGH = 1.20
+HISTORY_HOURS = 8   # how many hourly snapshots to keep per pair
 
 # ──────────────────────────────────────────────
 # 28-PAIR UNIVERSE
@@ -49,15 +51,14 @@ PAIRS = [
 
 CURRENCIES = ["EUR","USD","GBP","JPY","CHF","AUD","NZD","CAD"]
 
-FLAGS = {
-    "EUR":"🇪🇺","USD":"🇺🇸","GBP":"🇬🇧","JPY":"🇯🇵",
-    "CHF":"🇨🇭","AUD":"🇦🇺","NZD":"🇳🇿","CAD":"🇨🇦",
-}
-
 MAX_PAIRS = {c: 7 for c in CURRENCIES}
 
+# Pair -> (base, quote) lookup, derived directly from the symbol
+def base_quote(pair):
+    return pair[:3], pair[3:]
+
 # ──────────────────────────────────────────────
-# INDICATOR FUNCTIONS
+# INDICATOR FUNCTIONS  (unchanged from v10)
 # ──────────────────────────────────────────────
 def calc_ema(values, length):
     if len(values) < length:
@@ -74,91 +75,13 @@ def bull_flag_ema(closes, length):
     ema = calc_ema(closes, length)
     return closes[-1] > ema if ema is not None else False
 
-def calc_atr(highs, lows, closes, length=14):
-    if len(highs) < length + 1:
-        return None
-    tr_values = []
-    for i in range(1, len(highs)):
-        tr_values.append(max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i-1]),
-            abs(lows[i]  - closes[i-1])
-        ))
-    if len(tr_values) < length:
-        return None
-    alpha = 1.0 / length
-    atr = tr_values[0]
-    for tr in tr_values[1:]:
-        atr = alpha * tr + (1 - alpha) * atr
-    return atr
-
-def calc_atr_series(highs, lows, closes, length=14):
-    if len(highs) < length + 1:
-        return []
-    tr_values = []
-    for i in range(1, len(highs)):
-        tr_values.append(max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i-1]),
-            abs(lows[i]  - closes[i-1])
-        ))
-    if len(tr_values) < length:
-        return []
-    alpha = 1.0 / length
-    atr = tr_values[0]
-    series = [atr]
-    for tr in tr_values[1:]:
-        atr = alpha * tr + (1 - alpha) * atr
-        series.append(atr)
-    return series
-
-def calc_std(values, length):
-    if len(values) < length:
-        return None
-    recent = values[-length:]
-    mean = sum(recent) / length
-    return (sum((x - mean) ** 2 for x in recent) / length) ** 0.5
-
-def atr_regime(atr_val, atr_series, avg_bars=20):
-    if atr_val is None or len(atr_series) < avg_bars:
-        return None, "N/A", "⚪"
-    recent_avg = sum(atr_series[-avg_bars:]) / avg_bars
-    if recent_avg == 0:
-        return None, "N/A", "⚪"
-    ratio = atr_val / recent_avg
-    if ratio < ATR_LOW:
-        return round(ratio, 2), "LOW", "🔴"
-    elif ratio > ATR_HIGH:
-        return round(ratio, 2), "HIGH", "🟢"
-    else:
-        return round(ratio, 2), "NORMAL", "🟡"
-
-def calc_bbw(closes, length=20, mult=2.0):
-    if len(closes) < length * 2:
-        return None, False
-    bbw_values = []
-    for i in range(length, len(closes) + 1):
-        window = closes[i-length:i]
-        mid    = sum(window) / length
-        std    = calc_std(closes[:i], length)
-        if std is None or mid == 0:
-            continue
-        bbw = ((mid + mult*std) - (mid - mult*std)) / mid * 100
-        bbw_values.append(bbw)
-    if not bbw_values:
-        return None, False
-    latest     = bbw_values[-1]
-    recent_min = min(bbw_values[-length:]) if len(bbw_values) >= length else min(bbw_values)
-    return round(latest, 2), latest <= recent_min * 1.05
-
 # ──────────────────────────────────────────────
-# DATA FETCH
+# DATA FETCH  (unchanged from v10)
 # ──────────────────────────────────────────────
 def yf_symbol(pair):
     return f"{pair}=X"
 
 def fetch_raw_h1(pair, retries=3):
-    """Fetch raw H1 DataFrame with timezone-aware index."""
     symbol = yf_symbol(pair)
     for attempt in range(retries):
         try:
@@ -179,7 +102,6 @@ def fetch_raw_h1(pair, retries=3):
     return None
 
 def fetch_raw_d1(pair, retries=3):
-    """Fetch raw D1 DataFrame."""
     symbol = yf_symbol(pair)
     for attempt in range(retries):
         try:
@@ -200,19 +122,13 @@ def fetch_raw_d1(pair, retries=3):
     return None
 
 def get_signals_at(pair, h1_df, d1_df, cutoff_utc):
-    """
-    Calculate H1, H4, D1 EMA20 bull/bear signals for a pair
-    using only bars that closed AT OR BEFORE cutoff_utc.
-    """
     result = {"H1": False, "H4": False, "D1": False}
 
-    # ── H1 ──
     if h1_df is not None and not h1_df.empty:
         sliced = h1_df[h1_df.index <= cutoff_utc]
         if len(sliced) >= EMA_LEN:
             result["H1"] = bull_flag_ema(sliced["Close"].tolist(), EMA_LEN)
 
-    # ── H4 (resample H1 → H4) ──
     if h1_df is not None and not h1_df.empty:
         sliced = h1_df[h1_df.index <= cutoff_utc]
         if len(sliced) >= 4:
@@ -222,7 +138,6 @@ def get_signals_at(pair, h1_df, d1_df, cutoff_utc):
             if len(h4) >= EMA_LEN:
                 result["H4"] = bull_flag_ema(h4["Close"].tolist(), EMA_LEN)
 
-    # ── D1 ──
     if d1_df is not None and not d1_df.empty:
         sliced = d1_df[d1_df.index <= cutoff_utc]
         if len(sliced) >= EMA_LEN:
@@ -231,7 +146,6 @@ def get_signals_at(pair, h1_df, d1_df, cutoff_utc):
     return result
 
 def fetch_all_raw():
-    """Fetch H1 and D1 DataFrames for all 28 pairs."""
     h1_data = {}
     d1_data = {}
     print(f"Fetching raw data for {len(PAIRS)} pairs...")
@@ -242,7 +156,7 @@ def fetch_all_raw():
     return h1_data, d1_data
 
 # ──────────────────────────────────────────────
-# SCORE CALCULATION
+# CURRENCY SCORE CALCULATION  (unchanged from v10)
 # ──────────────────────────────────────────────
 def b2s(b):
     return 1 if b else -1
@@ -274,110 +188,80 @@ def calc_scores(signals):
     return scores
 
 # ──────────────────────────────────────────────
+# PAIR-LEVEL DERIVATION  (new in v11)
+# ──────────────────────────────────────────────
+def pair_strength(ccy_scores, pair):
+    """
+    Derive a pair's 0-10 strength + BUY/SELL signal from the two
+    underlying currency norm scores (-10..+10 each).
+
+    pair_diff range: -20 .. +20
+    strength range:   0 .. 10   (10 = max conviction either direction)
+    """
+    base, quote = base_quote(pair)
+    diff = ccy_scores[base]["norm"] - ccy_scores[quote]["norm"]
+    strength = round((abs(diff) / 20) * 10)
+    strength = max(0, min(10, strength))
+
+    if diff > 0:
+        signal = "BUY"
+    elif diff < 0:
+        signal = "SELL"
+    else:
+        signal = "NEUTRAL"
+
+    return strength, signal, diff
+
+def transition_label(signal_history):
+    """
+    signal_history: list of 'BUY'/'SELL'/'NEUTRAL' strings, oldest -> newest.
+    Aligned  = no direction flips across the whole window (NEUTRAL doesn't break alignment)
+    Neutral  = at least one BUY<->SELL flip somewhere in the window
+    """
+    directional = [s for s in signal_history if s != "NEUTRAL"]
+    if len(directional) < 2:
+        return "Neutral"
+    first = directional[0]
+    if all(s == first for s in directional):
+        return "Aligned"
+    return "Neutral"
+
+# ──────────────────────────────────────────────
 # DISPLAY HELPERS
 # ──────────────────────────────────────────────
-def rank_currencies(scores):
-    return sorted(CURRENCIES, key=lambda c: scores[c]["norm"], reverse=True)
-
-def alignment_label(ccy, scores):
-    s  = scores[ccy]
-    d  = 1 if s["norm"] >= 0 else -1
-    ag = sum(1 for tf in ("H1","H4","D1") if s[tf] * d > 0)
-    return ["✗ 0/3","⚠ 1/3","⚡ 2/3","✅ 3/3"][ag]
-
-def bias_label(norm):
-    if norm > 0: return "STRONG ▲"
-    if norm < 0: return "WEAK ▼"
-    return "NEUTRAL"
-
-def bar(norm):
-    n = min(10, max(0, abs(norm)))
+def strength_bar(strength):
+    n = max(0, min(10, strength))
     return "█" * n + "░" * (10 - n)
 
-def delta_str(curr, prev):
-    if prev is None:
-        return "  —  "
-    d = curr - prev
-    if d > 0: return f"▲+{d}"
-    if d < 0: return f"▼{d}"
-    return "→ 0"
+SIGNAL_DOT = {"BUY": "🟢", "SELL": "🔴", "NEUTRAL": "⚪"}
 
 # ──────────────────────────────────────────────
-# SCOREBOARD FORMATTER (identical layout for both messages)
+# MESSAGE BUILDER  (new card-per-pair format)
 # ──────────────────────────────────────────────
-def fmt_scoreboard(scores, ranked, title, prev_scores=None):
+def build_scorecard_message(pair_results, run_label):
     """
-    Formats a scoreboard block identical to Message 1.
-    If prev_scores provided, adds a DELTA column.
+    pair_results: dict pair -> {
+        "strength": int, "signal": str,
+        "history": [int, ...] (8 values, oldest->newest),
+        "transition": str
+    }
     """
     m = []
-    m.append(title)
-    m.append("```")
-    if prev_scores:
-        m.append(f"{'#':<3} {'CCY':<6} {'H1':>4} {'H4':>4} {'D1':>4} {'SCR':>5}  {'STRENGTH':<10} {'ALN':<6} {'DELTA':<7} BIAS")
-        m.append("─" * 75)
-    else:
-        m.append(f"{'#':<3} {'CCY':<6} {'H1':>4} {'H4':>4} {'D1':>4} {'SCR':>5}  {'STRENGTH':<10} {'ALN':<6} BIAS")
-        m.append("─" * 66)
+    m.append("📊 *HOURLY SCORE UPDATE* 📊")
+    m.append(f"`{run_label}`")
+    m.append("")
 
-    for rank, ccy in enumerate(ranked, 1):
-        s      = scores[ccy]
-        prefix = "▶" if rank == 1 else ("◀" if rank == 8 else " ")
-        prev   = prev_scores[ccy]["norm"] if prev_scores else None
-        delt   = delta_str(s["norm"], prev) if prev_scores else ""
-
-        if prev_scores:
-            m.append(
-                f"{prefix}{rank:<2} {FLAGS[ccy]}{ccy:<4} "
-                f"{s['H1']:>+4} {s['H4']:>+4} {s['D1']:>+4} "
-                f"{s['norm']:>+5}  {bar(s['norm']):<10} "
-                f"{alignment_label(ccy, scores):<6} {delt:<7} {bias_label(s['norm'])}"
-            )
-        else:
-            m.append(
-                f"{prefix}{rank:<2} {FLAGS[ccy]}{ccy:<4} "
-                f"{s['H1']:>+4} {s['H4']:>+4} {s['D1']:>+4} "
-                f"{s['norm']:>+5}  {bar(s['norm']):<10} "
-                f"{alignment_label(ccy, scores):<6} {bias_label(s['norm'])}"
-            )
-    m.append("```")
-    return "\n".join(m)
-
-# ──────────────────────────────────────────────
-# MESSAGE BUILDERS
-# ──────────────────────────────────────────────
-def build_message_1(scores, ranked):
-    pht     = pytz.timezone("Asia/Manila")
-    now_pht = datetime.now(pht).strftime("%Y-%m-%d %H:%M PHT")
-    m = []
-    m += [
-        f"⚡ *CURRENCY STRENGTH METER v10*",
-        f"EMA{EMA_LEN} · ATR{ATR_LEN} · BB{BB_LEN}",
-        f"`{now_pht}`", "",
-    ]
-    m.append(fmt_scoreboard(scores, ranked, "📊 *CURRENT SCOREBOARD*"))
-    return "\n".join(m)
-
-def build_message_2(snapshots):
-    pht     = pytz.timezone("Asia/Manila")
-    now_pht = datetime.now(pht).strftime("%Y-%m-%d %H:%M PHT")
-    m = []
-    m += [
-        f"📊 *CSM SCORE HISTORY*",
-        f"`{now_pht}`",
-        "_Showing last 4 hourly snapshots with score delta_",
-        "",
-    ]
-
-    prev_scores = None
-    for label, scores in snapshots:
-        ranked = rank_currencies(scores)
-        m.append(fmt_scoreboard(scores, ranked, label, prev_scores))
+    for pair in PAIRS:
+        r = pair_results[pair]
+        hist_str = " ".join(str(v) for v in r["history"])
+        m.append(f"{SIGNAL_DOT[r['signal']]} *{pair}*")
+        m.append(f"Signal: {r['signal']}")
+        m.append(f"Strength: {r['strength']} `{strength_bar(r['strength'])}`")
+        m.append(f"Score History: `{hist_str}`")
+        m.append(f"Transition: {r['transition']}")
         m.append("")
-        prev_scores = scores
 
-    m.append("_▲ Rising · ▼ Falling · →0 Unchanged_")
-    return "\n".join(m)
+    return "\n".join(m).strip()
 
 # ──────────────────────────────────────────────
 # TELEGRAM SEND
@@ -391,6 +275,27 @@ def send_telegram(message, token, chat_id):
     else:
         print(f"❌ Telegram error {resp.status_code}: {resp.text}")
     return resp
+
+def send_telegram_chunked(message, token, chat_id, max_len=3800):
+    """
+    Telegram caps messages at 4096 chars. 28 pair cards can exceed that,
+    so split on blank-line boundaries (between pair cards) if needed.
+    """
+    if len(message) <= max_len:
+        send_telegram(message, token, chat_id)
+        return
+
+    blocks = message.split("\n\n")
+    chunk = ""
+    for block in blocks:
+        candidate = (chunk + "\n\n" + block) if chunk else block
+        if len(candidate) > max_len:
+            send_telegram(chunk, token, chat_id)
+            chunk = block
+        else:
+            chunk = candidate
+    if chunk:
+        send_telegram(chunk, token, chat_id)
 
 # ──────────────────────────────────────────────
 # CORE RUN
@@ -408,49 +313,51 @@ def run_csm():
         # Step 1: Fetch all raw data once
         h1_data, d1_data = fetch_all_raw()
 
-        # Step 2: Build current signals from latest bar
-        print("\nCalculating current scores...")
-        current_signals = {}
+        # Step 2: Compute currency scores at each of the last HISTORY_HOURS
+        # hourly cutoffs (oldest -> newest), so we can derive pair strength
+        # history without re-fetching data.
+        print("\nCalculating currency scores across history window...")
+        hours_back_list = list(range(HISTORY_HOURS - 1, -1, -1))  # e.g. [7,6,...,1,0]
+        ccy_scores_by_cutoff = []  # list of (cutoff_utc, ccy_scores), oldest->newest
+        for hb in hours_back_list:
+            cutoff = now_utc - timedelta(hours=hb)
+            signals = {p: get_signals_at(p, h1_data[p], d1_data[p], cutoff) for p in PAIRS}
+            ccy_scores_by_cutoff.append((cutoff, calc_scores(signals)))
+            print(f"  ✓ snapshot t-{hb}h done")
+
+        # Step 3: Derive per-pair strength/signal at every snapshot,
+        # build 8-value history, current strength/signal, and transition.
+        print("\nDeriving pair-level scorecard...")
+        pair_results = {}
         for pair in PAIRS:
-            current_signals[pair] = get_signals_at(pair, h1_data[pair], d1_data[pair], now_utc)
+            history = []
+            signal_history = []
+            for cutoff, ccy_scores in ccy_scores_by_cutoff:
+                strength, signal, _ = pair_strength(ccy_scores, pair)
+                history.append(strength)
+                signal_history.append(signal)
 
-        current_scores = calc_scores(current_signals)
-        current_ranked = rank_currencies(current_scores)
+            current_strength = history[-1]
+            current_signal   = signal_history[-1]
+            trans = transition_label(signal_history)
 
-        # Step 3: Build 4 historical snapshots (3h ago, 2h ago, 1h ago, now)
-        print("\nCalculating historical snapshots...")
-        snapshots = []
-        for hours_back in [3, 2, 1, 0]:
-            cutoff = now_utc - timedelta(hours=hours_back)
-            label_pht = (datetime.now(pht) - timedelta(hours=hours_back)).strftime("%H:%M PHT")
+            pair_results[pair] = {
+                "strength": current_strength,
+                "signal": current_signal,
+                "history": history,
+                "transition": trans,
+            }
 
-            if hours_back == 0:
-                label = f"🕐 *{label_pht} — NOW*"
-            else:
-                label = f"🕐 *{label_pht}*"
+        # Step 4: Build message
+        msg = build_scorecard_message(pair_results, now_pht)
 
-            snap_signals = {}
-            for pair in PAIRS:
-                snap_signals[pair] = get_signals_at(pair, h1_data[pair], d1_data[pair], cutoff)
+        print(f"\n── Scorecard Message [{len(msg)} chars] ──")
+        print(msg)
 
-            snap_scores = calc_scores(snap_signals)
-            snapshots.append((label, snap_scores))
-            print(f"  ✓ {label_pht} snapshot done")
-
-        # Step 4: Build messages
-        msg1 = build_message_1(current_scores, current_ranked)
-        msg2 = build_message_2(snapshots)
-
-        print(f"\n── Message 1 [{len(msg1)} chars] ──")
-        print(msg1)
-        print(f"\n── Message 2 [{len(msg2)} chars] ──")
-        print(msg2)
-
-        # Step 5: Broadcast
+        # Step 5: Broadcast (chunked, since 28 pair cards can exceed Telegram's 4096 char cap)
         for idx, chat_id in enumerate(TELEGRAM_CHANNELS, 1):
             print(f"\n📡 Sending to channel {idx}: {chat_id}")
-            send_telegram(msg1, TELEGRAM_BOT_TOKEN, chat_id)
-            send_telegram(msg2, TELEGRAM_BOT_TOKEN, chat_id)
+            send_telegram_chunked(msg, TELEGRAM_BOT_TOKEN, chat_id)
 
         print(f"\n✅ Broadcast complete — {len(TELEGRAM_CHANNELS)} channel(s).")
 
@@ -475,8 +382,8 @@ def run_scheduler():
         time.sleep(30)
 
 def main():
-    print("  Currency Strength Meter — yFinance Edition v10")
-    print("  EMA20 · ATR14 · BB20 · Historical Scoreboard")
+    print("  Currency Strength Meter — yFinance Edition v11")
+    print("  EMA20 · Pair-Level Scorecard (28 pairs, 8h history)")
     print("=" * 60)
     if "--once" in sys.argv:
         print("  Mode: SINGLE RUN\n")
